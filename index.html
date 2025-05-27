@@ -1,0 +1,647 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Шахматы с ИИ</title>
+<style>
+  body {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    font-family: sans-serif;
+    background: #f0f0f0;
+    padding: 20px;
+  }
+  #status {
+    margin-bottom: 10px;
+    font-size: 18px;
+    font-weight: bold;
+  }
+  .board {
+    display: grid;
+    grid-template-columns: repeat(8, 60px);
+    grid-template-rows: repeat(8, 60px);
+    border: 2px solid #333;
+  }
+  .cell {
+    width: 60px;
+    height: 60px;
+    display: flex;
+    justify-content: center;
+    align-items: center;
+    font-size: 36px;
+    user-select: none;
+    position: relative;
+  }
+  .white {
+    background-color: #eee;
+  }
+  .black {
+    background-color: #888;
+  }
+  .highlight {
+    outline: 3px solid yellow;
+  }
+  .piece {
+    cursor: grab;
+  }
+  .promotion-select {
+    position: absolute;
+    top: 5px;
+    left: 5px;
+    background: white;
+    border: 1px solid #333;
+    display: flex;
+    flex-direction: column;
+    font-size: 24px;
+    z-index: 10;
+  }
+  .promotion-option {
+    cursor: pointer;
+    padding: 4px;
+    text-align: center;
+  }
+  button {
+    margin: 15px;
+    padding: 10px 20px;
+    font-size: 16px;
+    cursor: pointer;
+  }
+</style>
+</head>
+<body>
+
+<div id="status">Ход белых</div>
+<button onclick="resetGame()">Сбросить партию</button>
+<div class="board" id="board"></div>
+
+<script>
+  const boardEl = document.getElementById('board');
+  const statusEl = document.getElementById('status');
+
+  let boardState = [];
+  let turn = 'white'; // 'white' или 'black'
+  let selected = null; // выбранная фигура {row, col}
+  let validMoves = [];
+  let lastMove = null; // для взятия на проходе
+  let castlingRights = {
+    whiteKingMoved: false,
+    whiteKRookMoved: false,
+    whiteQRookMoved: false,
+    blackKingMoved: false,
+    blackKRookMoved: false,
+    blackQRookMoved: false,
+  };
+  let promotionPending = null; // {row, col, color}
+
+  // Unicode фигуры
+  const pieces = {
+    white: { king: '♔', queen: '♕', rook: '♖', bishop: '♗', knight: '♘', pawn: '♙' },
+    black: { king: '♚', queen: '♛', rook: '♜', bishop: '♝', knight: '♞', pawn: '♟' },
+  };
+
+  // Начальная расстановка
+  function initBoard() {
+    boardState = [
+      [pieces.black.rook, pieces.black.knight, pieces.black.bishop, pieces.black.queen, pieces.black.king, pieces.black.bishop, pieces.black.knight, pieces.black.rook],
+      Array(8).fill(pieces.black.pawn),
+      Array(8).fill(''),
+      Array(8).fill(''),
+      Array(8).fill(''),
+      Array(8).fill(''),
+      Array(8).fill(pieces.white.pawn),
+      [pieces.white.rook, pieces.white.knight, pieces.white.bishop, pieces.white.queen, pieces.white.king, pieces.white.bishop, pieces.white.knight, pieces.white.rook],
+    ];
+    turn = 'white';
+    selected = null;
+    validMoves = [];
+    lastMove = null;
+    castlingRights = {
+      whiteKingMoved: false,
+      whiteKRookMoved: false,
+      whiteQRookMoved: false,
+      blackKingMoved: false,
+      blackKRookMoved: false,
+      blackQRookMoved: false,
+    };
+    promotionPending = null;
+    updateStatus();
+    renderBoard();
+  }
+
+  function isWhite(piece) {
+    return Object.values(pieces.white).includes(piece);
+  }
+  function isBlack(piece) {
+    return Object.values(pieces.black).includes(piece);
+  }
+  function sameColor(p1, p2) {
+    if (!p1 || !p2) return false;
+    return (isWhite(p1) && isWhite(p2)) || (isBlack(p1) && isBlack(p2));
+  }
+
+  // Проверка, что позиция в пределах доски
+  function onBoard(r, c) {
+    return r >= 0 && r < 8 && c >= 0 && c < 8;
+  }
+
+  // Функция получения всех возможных ходов фигуры (без проверки шаха, это отдельно)
+  function getPseudoLegalMoves(r, c, piece, ignoreKingSafety = false) {
+    const moves = [];
+    const color = isWhite(piece) ? 'white' : 'black';
+    const enemyColor = color === 'white' ? 'black' : 'white';
+
+    const directions = {
+      rook: [[1,0],[-1,0],[0,1],[0,-1]],
+      bishop: [[1,1],[1,-1],[-1,1],[-1,-1]],
+      queen: [[1,0],[-1,0],[0,1],[0,-1],[1,1],[1,-1],[-1,1],[-1,-1]],
+      knight: [[-2,-1],[-2,1],[2,-1],[2,1],[-1,-2],[-1,2],[1,-2],[1,2]],
+      king: [[-1,-1],[-1,0],[-1,1],[0,-1],[0,1],[1,-1],[1,0],[1,1]],
+    };
+
+    switch(piece) {
+      case pieces.white.pawn:
+      case pieces.black.pawn: {
+        let dir = (color === 'white') ? -1 : 1;
+        let startRow = (color === 'white') ? 6 : 1;
+
+        // Вперёд 1
+        let r1 = r + dir;
+        if (onBoard(r1, c) && !boardState[r1][c]) {
+          moves.push([r1, c]);
+          // Вперёд 2 с начальной позиции
+          let r2 = r + 2*dir;
+          if (r === startRow && !boardState[r2][c]) moves.push([r2, c]);
+        }
+        // Взятие по диагонали
+        for (let dc of [-1,1]) {
+          let rr = r + dir;
+          let cc = c + dc;
+          if (onBoard(rr, cc)) {
+            let target = boardState[rr][cc];
+            if (target && !sameColor(piece, target)) {
+              moves.push([rr, cc]);
+            }
+            // Взятие на проходе
+            if (!target && lastMove && lastMove.piece.toLowerCase() === pieces.black.pawn.toLowerCase() && color === 'white' ||
+                lastMove && lastMove.piece.toLowerCase() === pieces.white.pawn.toLowerCase() && color === 'black') {
+              // Проверка на проход
+              if (lastMove.to[0] === r && lastMove.to[1] === cc) {
+                if (Math.abs(lastMove.from[0] - lastMove.to[0]) === 2) {
+                  moves.push([rr, cc]);
+                }
+              }
+            }
+          }
+        }
+        break;
+      }
+      case pieces.white.knight:
+      case pieces.black.knight: {
+        for (const [dr, dc] of directions.knight) {
+          let rr = r + dr;
+          let cc = c + dc;
+          if (onBoard(rr, cc)) {
+            let target = boardState[rr][cc];
+            if (!target || !sameColor(piece, target)) moves.push([rr, cc]);
+          }
+        }
+        break;
+      }
+      case pieces.white.bishop:
+      case pieces.black.bishop: {
+        for (const [dr, dc] of directions.bishop) {
+          let rr = r + dr;
+          let cc = c + dc;
+          while(onBoard(rr, cc)) {
+            let target = boardState[rr][cc];
+            if (!target) {
+              moves.push([rr, cc]);
+            } else {
+              if (!sameColor(piece, target)) moves.push([rr, cc]);
+              break;
+            }
+            rr += dr; cc += dc;
+          }
+        }
+        break;
+      }
+      case pieces.white.rook:
+      case pieces.black.rook: {
+        for (const [dr, dc] of directions.rook) {
+          let rr = r + dr;
+          let cc = c + dc;
+          while(onBoard(rr, cc)) {
+            let target = boardState[rr][cc];
+            if (!target) {
+              moves.push([rr, cc]);
+            } else {
+              if (!sameColor(piece, target)) moves.push([rr, cc]);
+              break;
+            }
+            rr += dr; cc += dc;
+          }
+        }
+        break;
+      }
+      case pieces.white.queen:
+      case pieces.black.queen: {
+        for (const [dr, dc] of directions.queen) {
+          let rr = r + dr;
+          let cc = c + dc;
+          while(onBoard(rr, cc)) {
+            let target = boardState[rr][cc];
+            if (!target) {
+              moves.push([rr, cc]);
+            } else {
+              if (!sameColor(piece, target)) moves.push([rr, cc]);
+              break;
+            }
+            rr += dr; cc += dc;
+          }
+        }
+        break;
+      }
+      case pieces.white.king:
+      case pieces.black.king: {
+        for (const [dr, dc] of directions.king) {
+          let rr = r + dr;
+          let cc = c + dc;
+          if (onBoard(rr, cc)) {
+            let target = boardState[rr][cc];
+            if (!target || !sameColor(piece, target)) moves.push([rr, cc]);
+          }
+        }
+        // Рокировка
+        if (!ignoreKingSafety && !isInCheck(color)) {
+          // Белые
+          if (color === 'white' && !castlingRights.whiteKingMoved) {
+            // Рокировка королевская (король+ладья с h1)
+            if (!castlingRights.whiteKRookMoved &&
+              !boardState[7][5] && !boardState[7][6] &&
+              !squareAttacked(7,5, 'black') && !squareAttacked(7,6, 'black')) {
+              moves.push([7,6,'castle-kingside']);
+            }
+            // Рокировка ферзёвая (король+ладья с a1)
+            if (!castlingRights.whiteQRookMoved &&
+              !boardState[7][1] && !boardState[7][2] && !boardState[7][3] &&
+              !squareAttacked(7,2, 'black') && !squareAttacked(7,3, 'black')) {
+              moves.push([7,2,'castle-queenside']);
+            }
+          }
+          // Чёрные
+          if (color === 'black' && !castlingRights.blackKingMoved) {
+            // Рокировка королевская (король+ладья с h8)
+            if (!castlingRights.blackKRookMoved &&
+              !boardState[0][5] && !boardState[0][6] &&
+              !squareAttacked(0,5, 'white') && !squareAttacked(0,6, 'white')) {
+              moves.push([0,6,'castle-kingside']);
+            }
+            // Рокировка ферзёвая (король+ладья с a8)
+            if (!castlingRights.blackQRookMoved &&
+              !boardState[0][1] && !boardState[0][2] && !boardState[0][3] &&
+              !squareAttacked(0,2, 'white') && !squareAttacked(0,3, 'white')) {
+              moves.push([0,2,'castle-queenside']);
+            }
+          }
+        }
+        break;
+      }
+    }
+
+    return moves;
+  }
+
+  // Проверка, атакуется ли клетка цветом атакующего
+  function squareAttacked(r, c, byColor) {
+    for(let rr=0; rr<8; rr++) {
+      for(let cc=0; cc<8; cc++) {
+        let p = boardState[rr][cc];
+        if (p && ((byColor === 'white' && isWhite(p)) || (byColor === 'black' && isBlack(p)))) {
+          let moves = getPseudoLegalMoves(rr, cc, p, true);
+          for (const m of moves) {
+            if (m[0] === r && m[1] === c) return true;
+          }
+        }
+      }
+    }
+    return false;
+  }
+
+  // Поиск координат короля данного цвета
+  function findKing(color) {
+    const kingPiece = color === 'white' ? pieces.white.king : pieces.black.king;
+    for(let r=0; r<8; r++) {
+      for(let c=0; c<8; c++) {
+        if (boardState[r][c] === kingPiece) return [r, c];
+      }
+    }
+    return null;
+  }
+
+  // Проверка, что король color в шахе
+  function isInCheck(color) {
+    const kingPos = findKing(color);
+    if (!kingPos) return false; // нет короля - пат/мат
+    return squareAttacked(kingPos[0], kingPos[1], color === 'white' ? 'black' : 'white');
+  }
+
+  // Проверка легальности хода с точки зрения шаха (нельзя поставить себя в шах)
+  function filterLegalMoves(r, c, piece) {
+    let moves = getPseudoLegalMoves(r, c, piece);
+    const legalMoves = [];
+    for (const m of moves) {
+      const [rr, cc] = m;
+      // Сделаем ход временно
+      const originalFrom = boardState[r][c];
+      const originalTo = boardState[rr][cc];
+      boardState[rr][cc] = originalFrom;
+      boardState[r][c] = '';
+      // Проверка шаха
+      if (!isInCheck(isWhite(piece) ? 'white' : 'black')) legalMoves.push(m);
+      // Откат
+      boardState[r][c] = originalFrom;
+      boardState[rr][cc] = originalTo;
+    }
+    return legalMoves;
+  }
+
+  // Сделать ход
+  function makeMove(fromR, fromC, toR, toC, special = null) {
+    if (promotionPending) return; // Не делать ход, если ждем превращения пешки
+
+    const piece = boardState[fromR][fromC];
+    if (!piece) return false;
+
+    // Рокировка
+    if (special && special.startsWith('castle')) {
+      if (special === 'castle-kingside') {
+        // Король на 2 вправо, ладья на клетку рядом слева
+        boardState[toR][toC] = piece;
+        boardState[fromR][fromC] = '';
+        if (turn === 'white') {
+          boardState[7][5] = boardState[7][7];
+          boardState[7][7] = '';
+          castlingRights.whiteKingMoved = true;
+          castlingRights.whiteKRookMoved = true;
+        } else {
+          boardState[0][5] = boardState[0][7];
+          boardState[0][7] = '';
+          castlingRights.blackKingMoved = true;
+          castlingRights.blackKRookMoved = true;
+        }
+      } else if (special === 'castle-queenside') {
+        // Король на 2 влево, ладья на клетку справа от короля
+        boardState[toR][toC] = piece;
+        boardState[fromR][fromC] = '';
+        if (turn === 'white') {
+          boardState[7][3] = boardState[7][0];
+          boardState[7][0] = '';
+          castlingRights.whiteKingMoved = true;
+          castlingRights.whiteQRookMoved = true;
+        } else {
+          boardState[0][3] = boardState[0][0];
+          boardState[0][0] = '';
+          castlingRights.blackKingMoved = true;
+          castlingRights.blackQRookMoved = true;
+        }
+      }
+      lastMove = { from: [fromR, fromC], to: [toR, toC], piece };
+      toggleTurn();
+      updateStatus();
+      renderBoard();
+      if (turn === 'black') setTimeout(aiMoveWrapper, 300);
+      return true;
+    }
+
+    // Взятие на проходе
+    if (piece.toLowerCase() === pieces.white.pawn.toLowerCase() || piece.toLowerCase() === pieces.black.pawn.toLowerCase()) {
+      if (toC !== fromC && !boardState[toR][toC]) {
+        // Пешка взяла на проходе
+        let dir = turn === 'white' ? 1 : -1;
+        boardState[toR + dir][toC] = '';
+      }
+    }
+
+    // Обновляем права на рокировку
+    if (piece === pieces.white.king) castlingRights.whiteKingMoved = true;
+    if (piece === pieces.black.king) castlingRights.blackKingMoved = true;
+    if (piece === pieces.white.rook) {
+      if (fromR === 7 && fromC === 0) castlingRights.whiteQRookMoved = true;
+      if (fromR === 7 && fromC === 7) castlingRights.whiteKRookMoved = true;
+    }
+    if (piece === pieces.black.rook) {
+      if (fromR === 0 && fromC === 0) castlingRights.blackQRookMoved = true;
+      if (fromR === 0 && fromC === 7) castlingRights.blackKRookMoved = true;
+    }
+
+    boardState[toR][toC] = piece;
+    boardState[fromR][fromC] = '';
+    lastMove = { from: [fromR, fromC], to: [toR, toC], piece };
+
+    // Проверка превращения пешки
+    if ((piece === pieces.white.pawn && toR === 0) || (piece === pieces.black.pawn && toR === 7)) {
+      promotionPending = { row: toR, col: toC, color: turn };
+      renderBoard();
+      return true;
+    }
+
+    toggleTurn();
+    updateStatus();
+    renderBoard();
+
+    if (turn === 'black') setTimeout(aiMoveWrapper, 300);
+
+    return true;
+  }
+
+  function toggleTurn() {
+    turn = (turn === 'white') ? 'black' : 'white';
+  }
+
+  function updateStatus() {
+    if (promotionPending) {
+      statusEl.textContent = `Пешка готова к превращению (${turn === 'white' ? 'Белые' : 'Чёрные'})`;
+      return;
+    }
+
+    if (isInCheck(turn)) {
+      if (isCheckmate(turn)) {
+        statusEl.textContent = `Мат! Выиграли ${turn === 'white' ? 'чёрные' : 'белые'}!`;
+      } else {
+        statusEl.textContent = `Шах! Ход ${turn === 'white' ? 'Белых' : 'Чёрных'}`;
+      }
+    } else {
+      if (isStalemate(turn)) {
+        statusEl.textContent = 'Пат! Ничья.';
+      } else {
+        statusEl.textContent = `Ход ${turn === 'white' ? 'Белых' : 'Чёрных'}`;
+      }
+    }
+  }
+
+  function isCheckmate(color) {
+    if (!isInCheck(color)) return false;
+
+    // Есть ли ход, который выводит из шаха?
+    for(let r=0; r<8; r++) {
+      for(let c=0; c<8; c++) {
+        let p = boardState[r][c];
+        if (p && ((color === 'white' && isWhite(p)) || (color === 'black' && isBlack(p)))) {
+          let moves = filterLegalMoves(r, c, p);
+          if (moves.length > 0) return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  function isStalemate(color) {
+    if (isInCheck(color)) return false;
+
+    // Есть ли ход?
+    for(let r=0; r<8; r++) {
+      for(let c=0; c<8; c++) {
+        let p = boardState[r][c];
+        if (p && ((color === 'white' && isWhite(p)) || (color === 'black' && isBlack(p)))) {
+          let moves = filterLegalMoves(r, c, p);
+          if (moves.length > 0) return false;
+        }
+      }
+    }
+    return true;
+  }
+
+  // Отрисовка доски
+  function renderBoard() {
+    boardEl.innerHTML = '';
+
+    for (let r=0; r<8; r++) {
+      for(let c=0; c<8; c++) {
+        const cell = document.createElement('div');
+        cell.classList.add('cell');
+        const isWhiteCell = (r + c) % 2 === 0;
+        cell.classList.add(isWhiteCell ? 'white' : 'black');
+        cell.dataset.row = r;
+        cell.dataset.col = c;
+
+        // Подсветка ходов и выбранной фигуры
+        if (selected && selected.row == r && selected.col == c) cell.classList.add('highlight');
+        if (validMoves.some(m => m[0] === r && m[1] === c)) cell.classList.add('highlight');
+
+        const piece = boardState[r][c];
+        if (piece) {
+          const pieceEl = document.createElement('div');
+          pieceEl.textContent = piece;
+          pieceEl.classList.add('piece');
+          pieceEl.draggable = (turn === (isWhite(piece) ? 'white' : 'black')) && !promotionPending;
+          pieceEl.dataset.row = r;
+          pieceEl.dataset.col = c;
+          cell.appendChild(pieceEl);
+        }
+
+        // Показываем выбор превращения пешки
+        if (promotionPending && promotionPending.row === r && promotionPending.col === c) {
+          const promoDiv = document.createElement('div');
+          promoDiv.classList.add('promotion-select');
+          const promoPieces = ['queen', 'rook', 'bishop', 'knight'];
+          promoPieces.forEach(pName => {
+            const pSym = pieces[promotionPending.color][pName];
+            const option = document.createElement('div');
+            option.classList.add('promotion-option');
+            option.textContent = pSym;
+            option.onclick = () => {
+              boardState[r][c] = pSym;
+              promotionPending = null;
+              toggleTurn();
+              updateStatus();
+              renderBoard();
+              if (turn === 'black') setTimeout(aiMoveWrapper, 300);
+            };
+            promoDiv.appendChild(option);
+          });
+          cell.appendChild(promoDiv);
+        }
+
+        boardEl.appendChild(cell);
+      }
+    }
+  }
+
+  // Обработка клика по клетке (для выбора фигуры и хода)
+  boardEl.addEventListener('click', e => {
+    if (promotionPending) return; // Ждём превращения
+
+    const target = e.target.closest('.cell');
+    if (!target) return;
+    const r = +target.dataset.row;
+    const c = +target.dataset.col;
+    const piece = boardState[r][c];
+
+    // Если уже выбрана фигура, попробуем сходить туда
+    if (selected) {
+      // Проверяем, входит ли выбранный ход в validMoves
+      if (validMoves.some(m => m[0] === r && m[1] === c)) {
+        const specialMove = validMoves.find(m => m[0] === r && m[1] === c && m[2])?.[2] || null;
+        makeMove(selected.row, selected.col, r, c, specialMove);
+        selected = null;
+        validMoves = [];
+      } else {
+        // Если кликнули на другую свою фигуру - меняем выбор
+        if (piece && ((turn === 'white' && isWhite(piece)) || (turn === 'black' && isBlack(piece)))) {
+          selected = { row: r, col: c };
+          validMoves = filterLegalMoves(r, c, piece);
+        } else {
+          selected = null;
+          validMoves = [];
+        }
+      }
+    } else {
+      // Если фигура игрока, выбираем её
+      if (piece && ((turn === 'white' && isWhite(piece)) || (turn === 'black' && isBlack(piece)))) {
+        selected = { row: r, col: c };
+        validMoves = filterLegalMoves(r, c, piece);
+      }
+    }
+    renderBoard();
+  });
+
+  // AI: очень простой — выбирает случайный легальный ход за чёрных
+  function aiMoveWrapper() {
+    if (promotionPending || turn !== 'black') return;
+
+    let moves = [];
+    for (let r=0; r<8; r++) {
+      for(let c=0; c<8; c++) {
+        const p = boardState[r][c];
+        if (p && isBlack(p)) {
+          const legal = filterLegalMoves(r, c, p);
+          for (const m of legal) {
+            moves.push({from: [r,c], to: m});
+          }
+        }
+      }
+    }
+    if (moves.length === 0) {
+      updateStatus();
+      return;
+    }
+
+    // Простая логика: предпочитать ходы, захватывающие фигуры
+    let captureMoves = moves.filter(m => boardState[m.to[0]][m.to[1]]);
+    let chosenMove = captureMoves.length > 0 ? captureMoves[Math.floor(Math.random()*captureMoves.length)] : moves[Math.floor(Math.random()*moves.length)];
+
+    setTimeout(() => {
+      makeMove(chosenMove.from[0], chosenMove.from[1], chosenMove.to[0], chosenMove.to[1], chosenMove.to[2] || null);
+    }, 500);
+  }
+
+  function resetGame() {
+    initBoard();
+  }
+
+  initBoard();
+</script>
+</body>
+</html>
