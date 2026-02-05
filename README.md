@@ -51,32 +51,6 @@ Chess AI is a fully functional browser-based chess game featuring an intelligent
 
 Visit [vibecodegames.org/chess](https://www.vibecodegames.org/chess/) to play instantly.
 
-### Run Locally
-
-```bash
-# Clone the repository
-git clone https://github.com/gritsenko31/chess-ai.git
-
-# Navigate to project directory
-cd chess-ai
-
-# Open in browser (no build required)
-# Option 1: Double-click index.html
-# Option 2: Use a local server
-python -m http.server 8000
-# Then visit http://localhost:8000
-📂 Project Structure
-text
-chess-ai/
-├── index.html          # Main HTML file
-├── style.css           # Styling and layout
-├── chess.js            # Core chess game logic
-├── ai.js               # AI opponent algorithm
-├── board.js            # Board rendering and UI
-├── /assets
-│   ├── /pieces         # Chess piece images
-│   └── /sounds         # Move and capture sounds (optional)
-└── README.md
 🎯 AI Algorithm
 The AI opponent uses a minimax algorithm with alpha-beta pruning to evaluate positions and select optimal moves. The AI considers:
 
